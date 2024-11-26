@@ -1,107 +1,15 @@
 #!/bin/bash
 set -x -e
-HOST_DIR="${HOST_DIR:-/host}"
-RELEASE_FILE="${RELEASE_FILE:-/etc/os-release}"
-CONF_FILE="${CONF_FILE:-/run/data/cloud-config}"
-LOCK_TIMEOUT="${LOCK_TIMEOUT:-600}"
-LOCK_FILE="${LOCK_FILE:-$HOST_DIR/run/elemental/upgrade.lock}"
+export ELEMENTAL_REGISTER_UPGRADE_CORRELATION_ID="${ELEMENTAL_REGISTER_UPGRADE_CORRELATION_ID}"
+export ELEMENTAL_REGISTER_UPGRADE_SNAPSHOT_LABELS="${ELEMENTAL_REGISTER_UPGRADE_SNAPSHOT_LABELS}"
+export ELEMENTAL_REGISTER_UPGRADE_RECOVERY="${ELEMENTAL_REGISTER_UPGRADE_RECOVERY:-$UPGRADE_RECOVERY}"
+export ELEMENTAL_REGISTER_UPGRADE_RECOVERY_ONLY="${ELEMENTAL_REGISTER_UPGRADE_RECOVERY_ONLY:-$UPGRADE_RECOVERY_ONLY}"
 
-mkdir -p $HOST_DIR/run/elemental
+# Cope with elemental-operator < 1.8.x versions that will not pass any correlation ID
+if [ -z "${ELEMENTAL_REGISTER_UPGRADE_CORRELATION_ID}" ]; then
+    ELEMENTAL_REGISTER_UPGRADE_CORRELATION_ID="$(sha256sum /etc/os-release | cut -d " " -f 1)"
+fi
 
-function config()
-{
-    if [ ! -s $CONF_FILE ]; then
-        if [ -e ${HOST_DIR}/oem/90_operator.yaml ]; then
-            rm -f ${HOST_DIR}/oem/90_operator.yaml
-        fi
-        return 0
-    fi
+echo "Applying upgrade: ${ELEMENTAL_REGISTER_UPGRADE_CORRELATION_ID}"
 
-    if [ ! -e ${HOST_DIR}/oem/90_operator.yaml ] || ! diff $CONF_FILE ${HOST_DIR}/oem/90_operator.yaml >/dev/null; then
-        cp -f $CONF_FILE ${HOST_DIR}/oem/90_operator.yaml
-    fi
-}
-
-function isHigherVersion()
-{
-    local img_ver=$( . ${RELEASE_FILE} && printf '%s\n' "${IMAGE_TAG}" )
-    local img_repo=$( . ${RELEASE_FILE} && printf '%s\n' "${IMAGE_REPO}" )
-    local host_ver=$( . ${HOST_DIR}${RELEASE_FILE} && printf '%s\n' "${IMAGE_TAG}" )
-    local host_repo=$( . ${HOST_DIR}${RELEASE_FILE} && printf '%s\n' "${IMAGE_REPO}" )
-    local higher_ver
-
-    # If images are from different repositories the version check is omitted
-    # and proceeds with the upgrade
-    [ "${host_repo}" != "${img_repo}" ] && return 0
-
-    # Without knowing the version in the host, all img versions are
-    # considered higher
-    [ -z "${host_ver}" ] && return 0
-
-    [ "${host_ver}" == "${img_ver}" ] && return 1
-
-    # Note sort -V is a natural numbering sort, not semver
-    higher_ver=$(printf '%s\n' "${img_ver}" "${host_ver}" | sort -rV | head -n1)
-    [ "${higher_ver}" == "${img_ver}" ] && return 0
-    return 1
-}
-
-function isEqualVersion() {
-    if diff $RELEASE_FILE ${HOST_DIR}${RELEASE_FILE} >/dev/null; then
-        return 0
-    fi
-    return 1
-}
-
-(
-    flock -w $LOCK_TIMEOUT 200 || exit 1
-
-    if ! SYSSTATUS=`nsenter -i -m -t 1 -- systemctl is-system-running`; then
-        case "$SYSSTATUS" in
-        stopping)
-            # Exit if there is a shutdown process already going on
-            exit 1
-            ;;
-        *)
-            # other states (degraded, maintenance...) should not stop OS upgrades, see https://github.com/rancher/elemental/issues/901
-            ;;
-        esac
-    fi
-
-    if isEqualVersion; then
-        echo "Upgrade already done with release:"
-        cat ${HOST_DIR}${RELEASE_FILE}
-
-        exit 0
-    fi
-
-    if [ "$FORCE" != "true" ] && [ "$UPGRADE_RECOVERY_ONLY" != "true" ]; then
-        if ! isHigherVersion; then
-            echo "Current OS is in a higher version, use FORCE to downgrade. Current version:"
-            cat ${HOST_DIR}${RELEASE_FILE}
-
-            exit 0
-        fi
-    fi
-
-    config
-    mount --rbind $HOST_DIR/dev /dev
-    mount --rbind $HOST_DIR/run /run
-
-    if [ "$UPGRADE_RECOVERY_ONLY" = "true" ]; then
-        elemental --debug upgrade-recovery --recovery-system.uri dir:/
-        exit 0
-    fi
-
-    if [ "$UPGRADE_RECOVERY" = "true" ]; then
-        elemental --debug upgrade --recovery --bootloader --system dir:/
-    else 
-        elemental --debug upgrade --bootloader --system dir:/
-    fi
-
-    STATE_PATH=/run/initramfs/elemental-state
-    [ ! -d "${STATE_PATH}" ] && STATE_PATH=/run/initramfs/cos-state
-
-    nsenter -i -m -t 1 -- reboot
-    exit 1
-) 200> $LOCK_FILE
+elemental-register upgrade --debug

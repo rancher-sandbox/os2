@@ -163,7 +163,7 @@ var _ = Describe("E2E - Test full Backup/Restore", Label("test-full-backup-resto
 			err := tools.Sed("%BACKUP_FILE%", backupFile, restoreYaml)
 			Expect(err).To(Not(HaveOccurred()))
 
-			// "prune" option should be set to true here
+			// "prune" option should be set to false in case of migration test
 			err = tools.Sed("%PRUNE%", "false", restoreYaml)
 			Expect(err).To(Not(HaveOccurred()))
 

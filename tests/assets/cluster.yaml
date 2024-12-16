@@ -6,7 +6,9 @@ metadata:
 spec:
   rkeConfig:
     etcd:
-      disableSnapshots: true
+      disableSnapshots: false
+      snapshotRetention: 5
+      snapshotScheduleCron: 0 */5 * * *
     machineGlobalConfig:
       cni: canal
       disable:
